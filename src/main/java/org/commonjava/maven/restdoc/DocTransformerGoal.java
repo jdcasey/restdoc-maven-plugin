@@ -19,7 +19,6 @@ package org.commonjava.maven.restdoc;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -33,7 +32,6 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.OutputKeys;
-import javax.xml.transform.Result;
 import javax.xml.transform.Source;
 import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerConfigurationException;
@@ -45,8 +43,8 @@ import javax.xml.transform.stream.StreamResult;
 import javax.xml.transform.stream.StreamSource;
 
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
@@ -54,6 +52,7 @@ import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
@@ -75,7 +74,7 @@ import org.xml.sax.SAXException;
  */
 @Mojo( name = "generate", defaultPhase = LifecyclePhase.PROCESS_RESOURCES, requiresDependencyResolution = ResolutionScope.RUNTIME )
 public class DocTransformerGoal
-    extends AbstractMojo
+    implements org.apache.maven.plugin.Mojo
 {
     /**
      * Location to which generated documentation will be written.
@@ -93,6 +92,8 @@ public class DocTransformerGoal
 
     @Parameter( defaultValue = "${project}", readonly = true )
     private MavenProject project;
+
+    private Log log;
 
     public void execute()
         throws MojoExecutionException
@@ -119,6 +120,7 @@ public class DocTransformerGoal
                 + e.getMessage(), e );
         }
 
+        getLog().info( "Creating document builder." );
         DocumentBuilder builder;
         try
         {
@@ -137,22 +139,30 @@ public class DocTransformerGoal
             InputSource is;
             try
             {
+                getLog().info( "Reading XML from: " + resource );
                 is = new InputSource( resource.openStream() );
                 final Document document = builder.parse( is );
 
                 if ( master == null )
                 {
+                    getLog().info( "Initializing master merge document from: " + resource );
                     master = document;
                 }
                 else
                 {
+                    getLog().info( "Merging elements from: " + resource );
                     final Element root = master.getDocumentElement();
+                    getLog().info( "Got master-document root element: " + root.getNodeName() );
 
                     final NodeList toAdd = document.getDocumentElement()
                                                    .getChildNodes();
                     for ( int i = 0; i < toAdd.getLength(); i++ )
                     {
-                        root.appendChild( toAdd.item( i ) );
+                        Node n = toAdd.item( i );
+                        n = master.importNode( n, true );
+
+                        getLog().info( "+" + n.getNodeName() );
+                        root.appendChild( n );
                     }
                 }
             }
@@ -173,15 +183,19 @@ public class DocTransformerGoal
     private ClassLoader createClassLoader()
         throws MojoExecutionException
     {
+        getLog().info( "Constructing dependency classloader..." );
         final Set<Artifact> artifacts = project.getDependencyArtifacts();
         final List<URL> urls = new ArrayList<URL>( artifacts.size() );
         for ( final Artifact a : artifacts )
         {
             try
             {
-                urls.add( a.getFile()
-                           .toURI()
-                           .toURL() );
+                final URL u = a.getFile()
+                               .toURI()
+                               .toURL();
+                urls.add( u );
+
+                getLog().info( "+" + u );
             }
             catch ( final MalformedURLException e )
             {
@@ -197,17 +211,22 @@ public class DocTransformerGoal
         throws MojoExecutionException
     {
         output.mkdirs();
-        final File out = new File( "restdocs.html" );
+        final File out = new File( output, "restdocs.html" );
 
         OutputStream outStream = null;
         try
         {
             outStream = new FileOutputStream( out );
 
-            final Result result = new StreamResult( outStream );
+            final StreamResult result = new StreamResult( outStream );
             final Source src = new DOMSource( master );
 
+            getLog().info( "Writing: " + out );
             transformer.transform( src, result );
+
+            getLog().info( "Flushing output" );
+            result.getOutputStream()
+                  .flush();
         }
         catch ( final IOException e )
         {
@@ -224,6 +243,7 @@ public class DocTransformerGoal
             {
                 try
                 {
+                    getLog().info( "Closing output" );
                     outStream.close();
                 }
                 catch ( final IOException e )
@@ -236,15 +256,25 @@ public class DocTransformerGoal
     private Transformer createTransformer()
         throws MojoExecutionException
     {
-        final InputStream xsltStream = Thread.currentThread()
-                                             .getContextClassLoader()
-                                             .getResourceAsStream( this.stylesheet );
-        if ( xsltStream == null )
+        final URL resource = Thread.currentThread()
+                                   .getContextClassLoader()
+                                   .getResource( stylesheet );
+        getLog().info( "Loading XSLT from: " + resource );
+
+        if ( resource == null )
         {
             throw new MojoExecutionException( "Cannot find stylesheet as plugin-classpath resource: " + stylesheet );
         }
 
-        final Source xslt = new StreamSource( xsltStream );
+        Source xslt;
+        try
+        {
+            xslt = new StreamSource( resource.openStream() );
+        }
+        catch ( final IOException e )
+        {
+            throw new MojoExecutionException( "Failed to read stylesheet: " + e.getMessage(), e );
+        }
 
         Transformer transformer;
         try
@@ -264,5 +294,15 @@ public class DocTransformerGoal
         }
 
         return transformer;
+    }
+
+    public Log getLog()
+    {
+        return log;
+    }
+
+    public void setLog( final Log log )
+    {
+        this.log = log;
     }
 }

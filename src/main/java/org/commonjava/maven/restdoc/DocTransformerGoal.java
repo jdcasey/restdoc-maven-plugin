@@ -99,10 +99,7 @@ public class DocTransformerGoal
         throws MojoExecutionException
     {
         final Document master = mergeEmbeddedRestDocs();
-
-        final Transformer transformer = createTransformer();
-
-        write( master, transformer );
+        write( master );
     }
 
     private Document mergeEmbeddedRestDocs()
@@ -207,35 +204,50 @@ public class DocTransformerGoal
         return new URLClassLoader( urls.toArray( new URL[urls.size()] ) );
     }
 
-    private void write( final Document master, final Transformer transformer )
+    private void write( final Document master )
         throws MojoExecutionException
     {
         output.mkdirs();
-        final File out = new File( output, "restdocs.html" );
+        final File transformedOut = new File( output, "restdocs.html" );
+        final File xmlOut = new File( output, "restdocs.xml" );
 
         OutputStream outStream = null;
+        OutputStream xmlStream = null;
         try
         {
-            outStream = new FileOutputStream( out );
+            outStream = new FileOutputStream( transformedOut );
 
-            final StreamResult result = new StreamResult( outStream );
+            StreamResult result = new StreamResult( outStream );
             final Source src = new DOMSource( master );
 
-            getLog().info( "Writing: " + out );
+            getLog().info( "Writing: " + transformedOut );
+            Transformer transformer = createTransformer( true );
             transformer.transform( src, result );
 
-            getLog().info( "Flushing output" );
+            getLog().info( "Flushing transformed output" );
+            result.getOutputStream()
+                  .flush();
+
+            xmlStream = new FileOutputStream( xmlOut );
+            result = new StreamResult( xmlStream );
+
+            getLog().info( "Writing: " + xmlOut );
+            transformer = createTransformer( false );
+            transformer.transform( src, result );
+
+            getLog().info( "Flushing xml output" );
             result.getOutputStream()
                   .flush();
         }
         catch ( final IOException e )
         {
-            throw new MojoExecutionException( "Failed to write transformed output to: " + out + ". Reason: "
+            throw new MojoExecutionException( "Failed to write transformed output to: " + transformedOut + ". Reason: "
                 + e.getMessage(), e );
         }
         catch ( final TransformerException e )
         {
-            throw new MojoExecutionException( "Failed to transform to: " + out + ". Reason: " + e.getMessage(), e );
+            throw new MojoExecutionException( "Failed to transform to: " + transformedOut + ". Reason: "
+                + e.getMessage(), e );
         }
         finally
         {
@@ -253,7 +265,7 @@ public class DocTransformerGoal
         }
     }
 
-    private Transformer createTransformer()
+    private Transformer createTransformer( final boolean useStylesheet )
         throws MojoExecutionException
     {
         final URL resource = Thread.currentThread()
@@ -266,21 +278,21 @@ public class DocTransformerGoal
             throw new MojoExecutionException( "Cannot find stylesheet as plugin-classpath resource: " + stylesheet );
         }
 
-        Source xslt;
-        try
-        {
-            xslt = new StreamSource( resource.openStream() );
-        }
-        catch ( final IOException e )
-        {
-            throw new MojoExecutionException( "Failed to read stylesheet: " + e.getMessage(), e );
-        }
-
         Transformer transformer;
         try
         {
-            transformer = TransformerFactory.newInstance()
-                                            .newTransformer( xslt );
+            if ( useStylesheet )
+            {
+                final Source xslt = new StreamSource( resource.openStream() );
+
+                transformer = TransformerFactory.newInstance()
+                                                .newTransformer( xslt );
+            }
+            else
+            {
+                transformer = TransformerFactory.newInstance()
+                                                .newTransformer();
+            }
 
             transformer.setOutputProperty( OutputKeys.INDENT, "yes" );
         }
@@ -291,6 +303,10 @@ public class DocTransformerGoal
         catch ( final TransformerFactoryConfigurationError e )
         {
             throw new MojoExecutionException( "Failed to instantiate Transformer: " + e.getMessage(), e );
+        }
+        catch ( final IOException e )
+        {
+            throw new MojoExecutionException( "Failed to read stylesheet: " + e.getMessage(), e );
         }
 
         return transformer;
